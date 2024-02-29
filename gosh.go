@@ -3,13 +3,14 @@ package main
 import (
 	"bufio"
 	"fmt"
+	shErr "gosh/shellError"
+	. "gosh/tokenizer"
 	"os"
 	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
-	"unicode"
 )
 
 // -- CONFIGURATION --
@@ -24,197 +25,71 @@ var (
 
 // $-- CONFIGURATION --$
 
-// -- EXCEPTIONS --
-type shellErrorObj struct {
-	command string
-	msg     string
-	blame   *string
-}
-
-type ShellError = *shellErrorObj
-
-func (e ShellError) Error() string {
-	if e.blame == nil {
-		return fmt.Sprintf("%s: %s: %s", shellName, e.command, e.msg)
-	}
-	return fmt.Sprintf("%s: %s: %s: %s", shellName, e.command, *e.blame, e.msg)
-}
-
-func NewWithBlame(command string, msg string, blame string) ShellError {
-	return &shellErrorObj{command: command, msg: msg, blame: &blame}
-}
-
-func New(command string, msg string) ShellError {
-	return &shellErrorObj{command: command, msg: msg, blame: nil}
-}
-
-// $-- EXCEPTIONS --$
-
-// -- TOKENIZER --
-
-type TokenType = int
-
-const (
-	WordToken TokenType = iota
-
-	// -- Quotations --
-
-	WeakQuotationToken
-	StrongQuotationToken
-
-	// $-- Quotations --$
-
-	PipeToken
-)
-
-type Token struct {
-	tokenType TokenType
-	value     string
-}
-
-type Tokenizer struct {
-	currentToken     string
-	currentTokenType TokenType
-	consecBackslash  int
-	tokens           []Token
-}
-
-func (t *Tokenizer) init() {
-	t.currentTokenType = WordToken
-	t.tokens = []Token{}
-}
-
-func NewTokenizer() Tokenizer {
-	res := Tokenizer{}
-	res.init()
-	return res
-}
-
-func (t *Tokenizer) isQuoted() bool {
-	return t.currentTokenType >= WeakQuotationToken && t.currentTokenType <= StrongQuotationToken
-}
-
-func (t *Tokenizer) isWeakQuoted() bool {
-	return t.currentTokenType == WeakQuotationToken
-}
-
-func (t *Tokenizer) isStrongQuoted() bool {
-	return t.currentTokenType == StrongQuotationToken
-}
-
-func (t *Tokenizer) appendToken() {
-	if t.currentToken != "" {
-		t.tokens = append(t.tokens, Token{t.currentTokenType, t.currentToken})
-		t.currentToken = ""
-	}
-	t.currentTokenType = WordToken
-}
-
-func (t *Tokenizer) expectsPipe() bool {
-	return len(t.tokens) > 0 && t.tokens[len(t.tokens)-1].tokenType == PipeToken
-}
-
-func (t *Tokenizer) IsComplete() bool {
-	return t.currentToken == "" &&
-		t.currentTokenType == WordToken && !t.expectsPipe() && t.consecBackslash%2 == 0
-}
-
-// CollectTokens Get tokens and flush state
-func (t *Tokenizer) CollectTokens() []Token {
-	if t.IsComplete() {
-		res := t.tokens
-		t.init()
-		return res
-	}
-	return nil
-}
-
-func (t *Tokenizer) Tokenize(command string) {
-	if !t.IsComplete() {
-		t.currentToken += "\n"
-	}
-
-	for _, char := range command {
-		if char == '\\' {
-			t.currentToken += string(char)
-			t.consecBackslash++
-			continue
-		}
-		switch {
-		case unicode.IsSpace(char) && !t.isQuoted():
-			t.appendToken()
-		case char == '\'':
-			if t.isWeakQuoted() {
-				t.currentToken += string(char)
-				t.appendToken()
-			} else if t.isStrongQuoted() {
-				t.currentToken += string(char)
-			} else {
-				t.appendToken()
-				t.currentToken += string(char)
-				t.currentTokenType = WeakQuotationToken
-			}
-		case char == '"':
-			if !t.isQuoted() {
-				t.appendToken()
-				t.currentToken += string(char)
-				t.currentTokenType = StrongQuotationToken
-			} else {
-				t.currentToken += string(char)
-				if t.isStrongQuoted() && t.consecBackslash%2 == 0 {
-					t.appendToken()
-				}
-			}
-		case char == '|':
-			if !t.isQuoted() {
-				t.appendToken()
-				t.currentToken += string(char)
-				t.currentTokenType = PipeToken
-				t.appendToken()
-			} else {
-				t.currentToken += string(char)
-			}
-		default:
-			t.currentToken += string(char)
-		}
-		t.consecBackslash = 0
-	}
-	if t.currentTokenType == WordToken {
-		t.appendToken()
-	}
-}
-
-// $-- TOKENIZER --$
-
 // -- EXPANSION CHAIN --
 
-type BuiltinFunc = func(...string) ShellError
-
-type Expansion = func(string) string
+type ExpansionRule = func(token Token) Token
 
 type ExpansionChain struct {
-	lastChange    string
-	expansionList []Expansion
+	lastChange    []Token
+	expansionList []ExpansionRule
 }
 
-func (ec *ExpansionChain) Append(ex Expansion) *ExpansionChain {
+func NewExpansionChain(exs ...ExpansionRule) ExpansionChain {
+	return ExpansionChain{nil, exs}
+}
+
+func (ec *ExpansionChain) Append(ex ExpansionRule) *ExpansionChain {
 	ec.expansionList = append(ec.expansionList, ex)
 	return ec
 }
 
-func (ec *ExpansionChain) Execute(str string) string {
-	ec.lastChange = str
+func (ec *ExpansionChain) Execute(tokens []Token) []Token {
+	ec.lastChange = tokens
 	for _, exp := range ec.expansionList {
-		ec.lastChange = exp(ec.lastChange)
+		var curr []Token
+		for _, token := range tokens {
+			curr = append(curr, exp(token))
+		}
+		ec.lastChange = curr
 	}
 	return ec.lastChange
+}
+
+func tildaExpansion(token Token) Token {
+	if token.TokenType == WordToken {
+		tokens := strings.FieldsFunc(token.Value, func(r rune) bool {
+			return r == ' ' || r == '\n' || r == '\t'
+		})
+
+		var list []string
+		for _, subToken := range tokens {
+			newToken := subToken
+			if strings.HasPrefix(subToken, "~/") {
+				newToken = filepath.Join(userHomeDir, subToken[2:])
+			} else if subToken == "~" {
+				newToken = userHomeDir
+			}
+			list = append(list, newToken)
+		}
+		token.Value = strings.Join(list, " ")
+	}
+	return token
+}
+
+func variableExpansion(token Token) Token {
+	if token.TokenType == WordToken || token.TokenType == StrongQuotationToken {
+		// TODO: Find variable references and read from venv, else pass empty string
+	}
+	return token
 }
 
 // $-- EXPANSION CHAIN --$
 
 // -- BUILT-INS --
 
-func exit(args ...string) ShellError {
+type BuiltinFunc = func(...string) shErr.ShellError
+
+func exit(args ...string) shErr.ShellError {
 	fmt.Println("exit")
 	for _, arg := range args {
 		code, err := strconv.Atoi(arg)
@@ -227,10 +102,10 @@ func exit(args ...string) ShellError {
 	return nil
 }
 
-func cd(args ...string) ShellError {
+func cd(args ...string) shErr.ShellError {
 	var directory string
 	if len(args) > 1 {
-		return New("cd", "too many arguments")
+		return shErr.New("cd", "too many arguments")
 	} else if len(args) == 1 && args[0] != "~" {
 		directory = args[0]
 	} else {
@@ -239,19 +114,19 @@ func cd(args ...string) ShellError {
 
 	var err error
 	if err = syscall.Chdir(directory); err != nil {
-		return NewWithBlame("cd", "No such file or directory", directory)
+		return shErr.NewWithBlame("cd", "No such file or directory", directory)
 	}
 	absolutePath, err = os.Getwd()
 	tildifyCdPath()
 	return nil
 }
 
-func pwd(_ ...string) ShellError {
+func pwd(_ ...string) shErr.ShellError {
 	fmt.Println(absolutePath)
 	return nil
 }
 
-func clear(_ ...string) ShellError {
+func clear(_ ...string) shErr.ShellError {
 	fmt.Printf("\033[2J")
 	fmt.Printf("\033[H")
 	return nil
@@ -275,16 +150,20 @@ var (
 
 // $-- BUILT-INS --$
 
-func findCommand(command string) (BuiltinFunc, ShellError) {
+func findCommand(command string) (BuiltinFunc, shErr.ShellError) {
 	if val, ok := builtins[command]; ok {
 		return val, nil
 	}
-	return nil, New(command, "command not found")
+	return nil, shErr.New(command, "command not found")
 }
 
 // -- State --
 var (
 	tokenizer = NewTokenizer()
+	chain     = NewExpansionChain(
+		tildaExpansion,
+		variableExpansion,
+	)
 )
 
 // $-- State --$
@@ -314,7 +193,7 @@ func main() {
 	for {
 		fmt.Printf("%s%s ", displayCdPath, prompt)
 		text, _ := reader.ReadString('\n')
-		text = strings.Trim(text, " \n")
+		text = strings.Trim(text, " \n\t")
 		tokenizer.Tokenize(text)
 		for !tokenizer.IsComplete() {
 			fmt.Print("> ")
@@ -322,6 +201,7 @@ func main() {
 			tokenizer.Tokenize(text)
 		}
 		tokens := tokenizer.CollectTokens()
+		tokens = chain.Execute(tokens)
 		fmt.Printf("%v", tokens)
 		commands := strings.Split(text, " ")
 		cmd, err := findCommand(commands[0])
