@@ -1,5 +1,10 @@
 package tokenizer
 
+import (
+	"strings"
+	"unicode"
+)
+
 type TokenType = int
 
 const (
@@ -13,6 +18,7 @@ const (
 	// $-- Quotations --$
 
 	PipeToken
+	SpaceToken
 )
 
 type Token struct {
@@ -58,6 +64,29 @@ func (t *Tokenizer) appendToken() {
 	t.currentTokenType = WordToken
 }
 
+func (t *Tokenizer) appendWithSpaceToken() {
+	if t.currentToken != "" {
+		t.tokens = append(t.tokens, Token{t.currentTokenType, t.currentToken})
+		t.currentToken = ""
+		t.tokens = append(t.tokens, Token{SpaceToken, " "})
+	}
+	t.currentTokenType = WordToken
+}
+
+func (t *Tokenizer) addPipeToken() {
+	t.tokens = append(t.tokens, Token{PipeToken, ""})
+}
+
+func (t *Tokenizer) addBackslashes() {
+	t.currentToken += strings.Repeat("\\", t.consecBackslash-t.consecBackslash%2)
+	t.consecBackslash = t.consecBackslash % 2
+}
+
+func (t *Tokenizer) addCharacter(r rune) {
+	t.addBackslashes()
+	t.currentToken += string(r)
+}
+
 func (t *Tokenizer) expectsPipe() bool {
 	return len(t.tokens) > 0 && t.tokens[len(t.tokens)-1].TokenType == PipeToken
 }
@@ -77,25 +106,47 @@ func (t *Tokenizer) CollectTokens() []Token {
 	return nil
 }
 
-func (t *Tokenizer) Tokenize(command string) {
-	if !t.IsComplete() {
-		t.currentToken += "\n"
+// ToCommand Remove space tokens and merge tokens not splitted by space
+func ToCommand(tokens []Token) []string {
+	var newTokens []string
+	tmp := Token{}
+	tmp.TokenType = WordToken
+	for _, token := range tokens {
+		if token.TokenType == SpaceToken {
+			newTokens = append(newTokens, tmp.Value)
+			tmp.Value = ""
+		} else {
+			tmp.Value = tmp.Value + token.Value
+		}
 	}
+	if tmp.Value != "" {
+		newTokens = append(newTokens, tmp.Value)
+	}
+	return newTokens
+}
 
+func (t *Tokenizer) Tokenize(command string) {
+	t.consecBackslash = 0
 	for _, char := range command {
 		if char == '\\' {
-			t.currentToken += string(char)
 			t.consecBackslash++
 			continue
 		}
+		if unicode.IsSpace(char) && !t.isQuoted() {
+			if t.consecBackslash%2 == 0 {
+				t.appendWithSpaceToken()
+			}
+			continue
+		}
+		if t.consecBackslash == 1 && t.isQuoted() {
+			t.addCharacter('\\')
+		}
 		switch {
-		//case unicode.IsSpace(char) && !t.isQuoted():
-		//	t.appendToken()
 		case char == '\'':
 			if t.isWeakQuoted() {
 				t.appendToken()
 			} else if t.isStrongQuoted() {
-				t.currentToken += string(char)
+				t.addCharacter(char)
 			} else {
 				t.appendToken()
 				t.currentTokenType = WeakQuotationToken
@@ -107,23 +158,22 @@ func (t *Tokenizer) Tokenize(command string) {
 			} else if t.isStrongQuoted() && t.consecBackslash%2 == 0 {
 				t.appendToken()
 			} else {
-				t.currentToken += string(char)
+				t.addCharacter(char)
 			}
 		case char == '|':
 			if !t.isQuoted() {
 				t.appendToken()
-				t.currentToken += string(char) // TODO: Is it actually necessary?
-				t.currentTokenType = PipeToken
-				t.appendToken()
+				t.addPipeToken()
 			} else {
-				t.currentToken += string(char)
+				t.addCharacter(char)
 			}
 		default:
-			t.currentToken += string(char)
+			t.addCharacter(char)
 		}
 		t.consecBackslash = 0
 	}
-	if t.currentTokenType == WordToken {
+	if t.currentTokenType == WordToken && t.consecBackslash%2 == 0 {
+		t.addBackslashes()
 		t.appendToken()
 	}
 }

@@ -3,9 +3,11 @@ package main
 import (
 	"bufio"
 	"fmt"
+	. "gosh/pathSearcher"
 	shErr "gosh/shellError"
 	. "gosh/tokenizer"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strconv"
@@ -47,7 +49,7 @@ func (ec *ExpansionChain) Execute(tokens []Token) []Token {
 	ec.lastChange = tokens
 	for _, exp := range ec.expansionList {
 		var curr []Token
-		for _, token := range tokens {
+		for _, token := range ec.lastChange {
 			curr = append(curr, exp(token))
 		}
 		ec.lastChange = curr
@@ -56,31 +58,25 @@ func (ec *ExpansionChain) Execute(tokens []Token) []Token {
 }
 
 func tildaExpansion(token Token) Token {
+	newToken := token
 	if token.TokenType == WordToken {
-		tokens := strings.FieldsFunc(token.Value, func(r rune) bool {
-			return r == ' ' || r == '\n' || r == '\t'
-		})
-
-		var list []string
-		for _, subToken := range tokens {
-			newToken := subToken
-			if strings.HasPrefix(subToken, "~/") {
-				newToken = filepath.Join(userHomeDir, subToken[2:])
-			} else if subToken == "~" {
-				newToken = userHomeDir
-			}
-			list = append(list, newToken)
+		if strings.HasPrefix(token.Value, "~/") {
+			newToken.Value = filepath.Join(userHomeDir, token.Value[2:])
+		} else if token.Value == "~" {
+			newToken.Value = userHomeDir
 		}
-		token.Value = strings.Join(list, " ")
 	}
-	return token
+	return newToken
 }
 
 func variableExpansion(token Token) Token {
-	if token.TokenType == WordToken || token.TokenType == StrongQuotationToken {
-		// TODO: Find variable references and read from venv, else pass empty string
+	newToken := token
+	if token.TokenType == WordToken {
+		if strings.HasPrefix(token.Value, "$") {
+			newToken.Value = os.Getenv(token.Value[1:])
+		}
 	}
-	return token
+	return newToken
 }
 
 // $-- EXPANSION CHAIN --$
@@ -126,12 +122,6 @@ func pwd(_ ...string) shErr.ShellError {
 	return nil
 }
 
-func clear(_ ...string) shErr.ShellError {
-	fmt.Printf("\033[2J")
-	fmt.Printf("\033[H")
-	return nil
-}
-
 func tildifyCdPath() {
 	displayCdPath = absolutePath
 	if strings.HasPrefix(absolutePath, userHomeDir) && username != "root" {
@@ -141,10 +131,9 @@ func tildifyCdPath() {
 
 var (
 	builtins = map[string]BuiltinFunc{
-		"exit":  exit,
-		"cd":    cd,
-		"pwd":   pwd,
-		"clear": clear,
+		"exit": exit,
+		"cd":   cd,
+		"pwd":  pwd,
 	}
 )
 
@@ -159,10 +148,11 @@ func findCommand(command string) (BuiltinFunc, shErr.ShellError) {
 
 // -- State --
 var (
-	tokenizer = NewTokenizer()
-	chain     = NewExpansionChain(
+	tokenizer    = NewTokenizer()
+	pathSearcher = NewPathSearcher()
+	chain        = NewExpansionChain(
 		tildaExpansion,
-		variableExpansion,
+		//variableExpansion,
 	)
 )
 
@@ -202,11 +192,23 @@ func main() {
 		}
 		tokens := tokenizer.CollectTokens()
 		tokens = chain.Execute(tokens)
-		fmt.Printf("%v", tokens)
-		commands := strings.Split(text, " ")
+		commands := ToCommand(tokens)
 		cmd, err := findCommand(commands[0])
 		if err != nil {
-			fmt.Println(err)
+			binary, err := pathSearcher.FindBinary(commands[0])
+			if err != nil {
+				fmt.Println(err)
+			} else {
+				var outbuf, errbuf strings.Builder
+				ex := exec.Command(binary, commands[1:]...)
+				ex.Stdout = &outbuf
+				ex.Stderr = &errbuf
+				err := ex.Run()
+				if err != nil {
+					fmt.Printf(errbuf.String())
+				}
+				fmt.Printf(outbuf.String())
+			}
 		} else {
 			if err := cmd(commands[1:]...); err != nil {
 				fmt.Println(err)
