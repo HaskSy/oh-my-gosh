@@ -161,14 +161,11 @@ func DefaultHandler(r *Runner, stdout io.Writer, stderr io.Writer) error {
 	return nil
 }
 
-func EmptyHandler(r *Runner, stdout io.Writer, stderr io.Writer) error {
-	return nil
-}
-
 func (r *Runner) RunInteractive(stdin io.Reader, stdout io.Writer, stderr io.Writer, runnerCall Handler) error {
 
 	reader := bufio.NewReader(stdin)
 	isEof := false
+
 	for !isEof {
 		_, err := fmt.Fprintf(stdout, "%s%s ", AppConfig.DisplayCdPath, AppConfig.Prompt)
 		if err != nil {
@@ -183,7 +180,12 @@ func (r *Runner) RunInteractive(stdin io.Reader, stdout io.Writer, stderr io.Wri
 			}
 		}
 		text = strings.Trim(text, " \n\t")
-		r.tokenizer.Tokenize(text)
+		if shErr := r.tokenizer.Tokenize(text); shErr != nil {
+			_, err = fmt.Fprintln(stderr, shErr.Error())
+			if err != nil {
+				return err
+			}
+		}
 		for !r.tokenizer.IsComplete() && !isEof {
 			_, err = fmt.Fprint(stdout, "> ")
 			if err != nil {
@@ -197,7 +199,12 @@ func (r *Runner) RunInteractive(stdin io.Reader, stdout io.Writer, stderr io.Wri
 					return err
 				}
 			}
-			r.tokenizer.Tokenize(text)
+			if shErr := r.tokenizer.Tokenize(text); shErr != nil {
+				_, err = fmt.Fprintln(stderr, shErr.Error())
+				if err != nil {
+					return err
+				}
+			}
 		}
 		err = runnerCall(r, stdout, stderr)
 		if err != nil {

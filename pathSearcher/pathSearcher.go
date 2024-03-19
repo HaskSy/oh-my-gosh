@@ -32,5 +32,5 @@ func (ps *PathSearcher) FindBinary(name string) (string, shErr.ShellError) {
 			return filePath, nil
 		}
 	}
-	return "", shErr.New(name, "command not found")
+	return "", shErr.NewCommand(name, "command not found")
 }

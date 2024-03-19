@@ -35,6 +35,16 @@ func executeTokenizerTests(t *testing.T, tests []Test) {
 func TestTokenizer(t *testing.T) {
 	tests := []Test{
 		{
+			[]string{"ls = ls"},
+			[]Token{
+				{TokenType: WordToken, Value: "ls"},
+				SpaceTokenInstance,
+				AssignTokenInstance,
+				SpaceTokenInstance,
+				{TokenType: WordToken, Value: "ls"},
+			},
+		},
+		{
 			[]string{"echo"},
 			[]Token{
 				{TokenType: WordToken, Value: "echo"},
