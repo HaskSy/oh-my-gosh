@@ -51,6 +51,26 @@ func cd(args ...string) error {
 	return nil
 }
 
+func ls(args ...string) error {
+	var directory string
+	if len(args) > 1 {
+		return fmt.Errorf("ls: too many arguments")
+	} else if len(args) == 1 && args[0] != "~" {
+		directory = args[0]
+	} else {
+		directory = AppConfig.AbsolutePath
+	}
+	files, err := os.ReadDir(directory)
+	if err != nil {
+		return err
+	}
+
+	for _, file := range files {
+		fmt.Println(file.Name())
+	}
+	return nil
+}
+
 func pwd(_ ...string) error {
 	fmt.Println(AppConfig.AbsolutePath)
 	return nil
@@ -68,6 +88,7 @@ var (
 		"exit": exit,
 		"cd":   cd,
 		"pwd":  pwd,
+		"lss":  ls,
 	}
 )
 
