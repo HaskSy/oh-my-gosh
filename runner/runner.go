@@ -116,6 +116,16 @@ func (r *Runner) RunCommand(commands [][]string, stdout io.Writer, stderr io.Wri
 		// we will not allow usage of builtIns in pipes (for now)
 		// it'll be pain in the ass to refactor again
 		// TODO make custom stdin, stdout and stderr for builtIns
+
+		res := strings.SplitN(commands[0][0], "=", 2)
+		if len(res) == 2 {
+			err := os.Setenv(res[0], res[1])
+			if err != nil {
+				return err
+			}
+			return nil
+		}
+
 		builtIn, err := findBuiltIn(commands[0][0])
 		if err == nil {
 			if err := builtIn(commands[0][1:]...); err != nil {

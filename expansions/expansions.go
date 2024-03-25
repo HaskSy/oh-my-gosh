@@ -23,6 +23,7 @@ func NewExpansionChain() ExpansionChain {
 	exs := []ExpansionRule{
 		tildaExpansion,
 		variableExpansion,
+		escapingCharacters,
 	}
 	return ExpansionChain{nil, exs}
 }
@@ -88,30 +89,56 @@ func isValidVarName(s string) bool {
 }
 
 func expandStrongQuotation(s string) string {
-	newstring := ""
+	newString := ""
 	for len(s) > 0 {
 		isDone := true
 		for i, c := range s {
 			if c == '$' {
 				token, remaining := SplitInVarTokens(s[i+1:])
 				if token != "" {
-					newstring += os.Getenv(token)
+					newString += os.Getenv(token)
 					s = remaining
 				} else {
-					newstring += remaining
+					newString += remaining
 					s = ""
 				}
 				isDone = false
 				break
 			} else {
-				newstring += string(c)
+				newString += string(c)
 			}
 		}
 		if isDone {
 			break
 		}
 	}
-	return newstring
+	return newString
+}
+
+func escapingCharacters(tokens []Token) []Token {
+	var newTokens []Token
+	for _, token := range tokens {
+		if token.TokenType == WordToken || token.TokenType == StrongQuotationToken {
+			token.Value = escapingCharactersString(token.Value)
+		}
+		newTokens = append(newTokens, token)
+	}
+	return newTokens
+
+}
+
+func escapingCharactersString(str string) string {
+	newString := ""
+	isEscape := false
+	for _, c := range str {
+		if c == '\\' && !isEscape {
+			isEscape = true
+			continue
+		}
+		newString += string(c)
+		isEscape = false
+	}
+	return newString
 }
 
 // $-- EXPANSION CHAIN --

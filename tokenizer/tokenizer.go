@@ -41,6 +41,7 @@ var AssignTokenInstance = Token{AssignToken, "="}
 
 type Tokenizer struct {
 	currentToken     string
+	assignVarToken   string // Keeps the variable name for token assign to then store it like `(=) varname value`
 	currentTokenType TokenType
 	consecBackslash  int
 	expectNewline    bool
@@ -278,6 +279,11 @@ func (t *Tokenizer) Tokenize(command string) shellError.ShellError {
 			} else {
 				t.addSpaceToken()
 				t.appendToken()
+				last := t.tokens[len(t.tokens)-1].Value
+				varname, _ := SplitInVarTokens(last)
+				if varname != last {
+					return shellError.NewCommand("=", fmt.Sprintf("Invalid env variable name: %s", varname))
+				}
 				t.addAssignToken()
 			}
 		default:
