@@ -71,7 +71,7 @@ var (
 	}
 )
 
-func findCommand(command string) (BuiltinFunc, error) {
+func findBuiltIn(command string) (BuiltinFunc, error) {
 	if val, ok := builtins[command]; ok {
 		return val, nil
 	}
@@ -106,40 +106,79 @@ func (r *Runner) Clear() {
 
 // RunCommand Used for interactive execution and execution with -c flag
 // TODO -c flag
-func (r *Runner) RunCommand(commands []string, stdout io.Writer, stderr io.Writer) error {
+func (r *Runner) RunCommand(commands [][]string, stdout io.Writer, stderr io.Writer) error {
 	if commands == nil || len(commands) == 0 {
 		return nil
 	}
+	if len(commands) == 1 {
+		// Due to the fact that pipes run in individual
+		// subshells and state of app remains untouched
+		// we will not allow usage of builtIns in pipes (for now)
+		// it'll be pain in the ass to refactor again
+		// TODO make custom stdin, stdout and stderr for builtIns
 
-	cmd, err := findCommand(commands[0])
-	if err == nil {
-		if err := cmd(commands[1:]...); err != nil {
-			fmt.Println(stderr, err)
-		}
-		return nil
-	}
-	binary, err2 := r.pathSearcher.FindBinary(commands[0])
-	if err2 != nil {
-		_, err := fmt.Fprintln(stderr, err2)
-		if err != nil {
-			return err
-		}
-	} else {
-		var outbuf, errbuf strings.Builder
-		ex := exec.Command(binary, commands[1:]...)
-		ex.Stdout = &outbuf
-		ex.Stderr = &errbuf
-		err := ex.Run()
-		if err != nil {
-			_, err = fmt.Fprintf(stderr, errbuf.String())
+		res := strings.SplitN(commands[0][0], "=", 2)
+		if len(res) == 2 {
+			err := os.Setenv(res[0], res[1])
 			if err != nil {
 				return err
 			}
+			return nil
 		}
-		_, err = fmt.Fprintf(stdout, outbuf.String())
+
+		builtIn, err := findBuiltIn(commands[0][0])
+		if err == nil {
+			if err := builtIn(commands[0][1:]...); err != nil {
+				fmt.Println(stderr, err)
+			}
+			return nil
+		}
+	}
+	var execs []*exec.Cmd
+	for i, command := range commands {
+		execs = append(execs,
+			exec.Command(command[0], command[1:]...))
+		if i > 0 {
+			pipe := execs[i]
+			pipe.Stdin, _ = execs[i-1].StdoutPipe()
+		}
+	}
+	var outbuf, errbuf strings.Builder
+	execs[len(execs)-1].Stdout = &outbuf
+	execs[len(execs)-1].Stderr = &errbuf
+
+	var err error
+	if len(execs) == 1 {
+		err = execs[0].Run()
+	} else {
+		c2 := execs[len(execs)-1]
+		c1 := execs[len(execs)-2]
+		for i := len(execs) - 2; i >= 0; i-- {
+			c1 = execs[i]
+			err = c2.Start()
+			if err != nil {
+				break
+			}
+			err = c1.Run()
+			if err != nil {
+				break
+			}
+			err = c2.Wait()
+			if err != nil {
+				break
+			}
+			c2 = c1
+		}
+	}
+	if err != nil {
+		_, err = fmt.Fprintf(stderr, errbuf.String())
 		if err != nil {
 			return err
 		}
+	}
+	_, err = fmt.Fprintf(stdout, outbuf.String())
+	if err != nil {
+		return err
 	}
 	return nil
 }
@@ -153,7 +192,11 @@ func DefaultHandler(r *Runner, stdout io.Writer, stderr io.Writer) error {
 		return err
 	}
 	// $-- TODO --
-	commands := ToCommand(tokens)
+	pipedCommands := splitInPipes(tokens)
+	var commands [][]string
+	for _, command := range pipedCommands {
+		commands = append(commands, ToCommand(command))
+	}
 	err = r.RunCommand(commands, stdout, stderr)
 	if err != nil {
 		return err
@@ -161,14 +204,30 @@ func DefaultHandler(r *Runner, stdout io.Writer, stderr io.Writer) error {
 	return nil
 }
 
-func EmptyHandler(r *Runner, stdout io.Writer, stderr io.Writer) error {
-	return nil
+func splitInPipes(tokens []Token) [][]Token {
+	var res [][]Token
+	var tmp []Token
+	for _, token := range tokens {
+		if token == PipeTokenInstance && len(tmp) > 0 {
+			res = append(res, tmp)
+			tmp = nil
+		} else {
+			tmp = append(tmp, token)
+		}
+	}
+	if len(tmp) > 0 {
+		res = append(res, tmp)
+		tmp = nil
+	}
+
+	return res
 }
 
 func (r *Runner) RunInteractive(stdin io.Reader, stdout io.Writer, stderr io.Writer, runnerCall Handler) error {
 
 	reader := bufio.NewReader(stdin)
 	isEof := false
+
 	for !isEof {
 		_, err := fmt.Fprintf(stdout, "%s%s ", AppConfig.DisplayCdPath, AppConfig.Prompt)
 		if err != nil {
@@ -183,7 +242,12 @@ func (r *Runner) RunInteractive(stdin io.Reader, stdout io.Writer, stderr io.Wri
 			}
 		}
 		text = strings.Trim(text, " \n\t")
-		r.tokenizer.Tokenize(text)
+		if shErr := r.tokenizer.Tokenize(text); shErr != nil {
+			_, err = fmt.Fprintln(stderr, shErr.Error())
+			if err != nil {
+				return err
+			}
+		}
 		for !r.tokenizer.IsComplete() && !isEof {
 			_, err = fmt.Fprint(stdout, "> ")
 			if err != nil {
@@ -197,7 +261,12 @@ func (r *Runner) RunInteractive(stdin io.Reader, stdout io.Writer, stderr io.Wri
 					return err
 				}
 			}
-			r.tokenizer.Tokenize(text)
+			if shErr := r.tokenizer.Tokenize(text); shErr != nil {
+				_, err = fmt.Fprintln(stderr, shErr.Error())
+				if err != nil {
+					return err
+				}
+			}
 		}
 		err = runnerCall(r, stdout, stderr)
 		if err != nil {

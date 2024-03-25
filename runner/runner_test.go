@@ -14,6 +14,10 @@ func TestMain(m *testing.M) {
 	m.Run()
 }
 
+func emptyHandler(r *Runner, stdout io.Writer, stderr io.Writer) error {
+	return nil
+}
+
 var runner Runner
 
 func beforeEach(writer *io.PipeWriter, prompts []string) {
@@ -52,7 +56,7 @@ func executeMultilineTokenizerTests(t *testing.T, tests []Test) {
 	for testId, test := range tests {
 		reader, writer := io.Pipe()
 		beforeEach(writer, test.Prompts)
-		err := runner.RunInteractive(reader, tmp, tmp, EmptyHandler)
+		err := runner.RunInteractive(reader, tmp, tmp, emptyHandler)
 		if err != nil {
 			panic(err)
 		}
@@ -68,8 +72,6 @@ func executeMultilineTokenizerTests(t *testing.T, tests []Test) {
 
 // Each line should be written without <newline>,
 // [executeMultilineTokenizerTests] will add <newline> itself
-// Missing/Appearing Trailing SpaceTokenInstance is not really an issue for now.
-// TODO Resolve Missing/Appearing Trailing SpaceTokenInstance issue
 func TestRunner_MultilineTokenizer(t *testing.T) {
 	tests := []Test{
 		{
@@ -93,7 +95,6 @@ func TestRunner_MultilineTokenizer(t *testing.T) {
 			},
 			[]Token{
 				{WordToken, "multilinetest"},
-				SpaceTokenInstance,
 			},
 		},
 		{
@@ -142,7 +143,6 @@ func TestRunner_MultilineTokenizer(t *testing.T) {
 				{WordToken, "Hello"},
 				SpaceTokenInstance,
 				{WordToken, "World"},
-				SpaceTokenInstance,
 			},
 		},
 		{
@@ -157,7 +157,6 @@ func TestRunner_MultilineTokenizer(t *testing.T) {
 				{StrongQuotationToken, "Hello"},
 				SpaceTokenInstance,
 				{WordToken, "World"},
-				SpaceTokenInstance,
 			},
 		},
 		{
@@ -172,7 +171,6 @@ func TestRunner_MultilineTokenizer(t *testing.T) {
 				{WordToken, "Hello"},
 				PipeTokenInstance,
 				{WordToken, "World"},
-				SpaceTokenInstance,
 			},
 		},
 		{
@@ -187,7 +185,6 @@ func TestRunner_MultilineTokenizer(t *testing.T) {
 				{WordToken, "Hello"},
 				PipeTokenInstance,
 				{WordToken, "World"},
-				SpaceTokenInstance,
 			},
 		},
 		{
